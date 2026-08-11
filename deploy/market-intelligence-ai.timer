@@ -1,0 +1,12 @@
+[Unit]
+Description=Run Market Intelligence AI Digest at 08:30 and 20:30 Taipei time
+
+[Timer]
+OnCalendar=*-*-* 08:30:00 Asia/Taipei
+OnCalendar=*-*-* 20:30:00 Asia/Taipei
+Persistent=true
+AccuracySec=1s
+Unit=market-intelligence-ai.service
+
+[Install]
+WantedBy=timers.target

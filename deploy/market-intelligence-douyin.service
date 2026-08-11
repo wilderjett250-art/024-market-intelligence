@@ -1,0 +1,34 @@
+[Unit]
+Description=Market Intelligence Douyin public-work synchronizer
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=marketintel
+Group=marketintel
+WorkingDirectory=/opt/market-intelligence/current
+Environment=DATA_DIR=/var/lib/market-intelligence
+EnvironmentFile=-/etc/market-intelligence/market-intelligence-ai.env
+Environment=DOUYIN_PROFILE_URL=https://www.douyin.com/user/MS4wLjABAAAAtrR3ZhxoEcDIwEpnBqfbNdf2R9f9w4QiSXCaRU431uuiL73K5qaBXTda0njLcQnv
+Environment=DOUYIN_LIVE_PATH=/var/lib/market-intelligence/douyin_live.json
+Environment=NODE_PATH=/opt/market-intelligence/tools/douyin-sync/node_modules
+Environment=PLAYWRIGHT_BROWSERS_PATH=/opt/market-intelligence/tools/browsers
+Environment=PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/opt/market-intelligence/tools/chromium/chrome-headless-shell
+Environment=DOUYIN_ASR_ENABLED=1
+Environment=DOUYIN_ASR_SCRIPT=/opt/market-intelligence/current/douyin_asr.py
+Environment=DOUYIN_ASR_MODEL=/opt/market-intelligence/tools/vosk-model-small-cn-0.22
+Environment=DOUYIN_ASR_PYTHON=/usr/libexec/platform-python
+Environment=DOUYIN_ASR_FFMPEG=/opt/market-intelligence/tools/ffmpeg
+Environment=DOUYIN_ASR_MEDIA_DIR=/var/lib/market-intelligence/douyin_media
+Environment=DOUYIN_AI_REFINE_ENABLED=1
+Environment=DOUYIN_AI_REFINE_SCRIPT=/opt/market-intelligence/current/douyin_refine.py
+Environment=DOUYIN_AI_REFINER_VERSION=douyin-news-v2
+ExecStart=/opt/market-intelligence/tools/node/bin/node /opt/market-intelligence/current/douyin_sync.js
+TimeoutStartSec=240
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/market-intelligence
+StandardOutput=journal
+StandardError=journal

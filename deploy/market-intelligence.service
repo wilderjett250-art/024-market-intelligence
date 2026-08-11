@@ -1,0 +1,27 @@
+[Unit]
+Description=Market Intelligence Terminal
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=marketintel
+Group=marketintel
+WorkingDirectory=/opt/market-intelligence/current
+Environment=HOST=0.0.0.0
+Environment=PORT=19083
+Environment=DATA_DIR=/var/lib/market-intelligence
+Environment=REFRESH_SECONDS=60
+Environment=EIA_SECONDS=900
+ExecStart=/usr/libexec/platform-python /opt/market-intelligence/current/app.py
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/market-intelligence
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

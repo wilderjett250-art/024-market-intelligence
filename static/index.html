@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0a0f12" />
+    <title>市场与地缘信息台</title>
+    <link rel="stylesheet" href="/styles.css?v=20260811c" />
+  </head>
+  <body>
+    <div class="noise" aria-hidden="true"></div>
+    <header class="topbar">
+      <a class="brand" href="/" aria-label="返回市场与地缘信息台">
+        <span class="brand-mark"><i></i><i></i><i></i></span>
+        <span><strong>市场与地缘信息台</strong><small>能源与地缘研究终端</small></span>
+      </a>
+      <div class="topbar-meta"><span class="live-dot"><b></b>全球速探同步</span><span id="clock" class="clock">--:--:--</span><button id="reload" class="icon-button" type="button" title="读取最新状态" aria-label="读取最新状态">↻</button></div>
+    </header>
+
+    <main class="shell">
+      <section class="command-strip" aria-label="终端状态">
+        <div class="command-copy">
+          <p class="eyebrow">研究终端</p>
+          <h1>市场与地缘信息终端</h1>
+          <p>实时同步“全球速探”（抖音）作品，并在固定时段向 AI 提问，快速查看当日重点变化。</p>
+        </div>
+        <div class="refresh-state"><span>最近整理</span><strong id="last-updated">等待首次整理</strong><small id="refresh-note">正在读取作品摘要状态</small></div>
+      </section>
+
+      <section class="signal-grid" aria-label="本次作品概览">
+        <article class="signal-card amber"><span class="signal-label">抖音作品</span><strong id="event-count">—</strong><small>全球速探最近同步状态</small></article>
+        <article class="signal-card teal"><span class="signal-label">AI 专题</span><strong id="healthy-count">—</strong><small>定时问询的固定关注点</small></article>
+        <article class="signal-card ivory"><span class="signal-label">定时 AI 问询</span><strong id="digest-status">—</strong><small id="digest-detail">每日两次固定提问</small></article>
+        <article class="signal-card red"><span class="signal-label">下次 AI 整理</span><strong>20:30</strong><small>每日 08:30 / 20:30，台北时间</small></article>
+      </section>
+
+      <nav class="section-tabs" aria-label="信息栏目切换">
+        <button class="section-tab active" type="button" data-section="live-panel"><span>01</span>实时快讯<small>作品实时同步</small></button>
+        <button class="section-tab" type="button" data-section="ai-panel"><span>02</span>AI 研判<small>每日 08:30 / 20:30</small></button>
+      </nav>
+
+      <section class="workbench">
+        <section id="live-panel" class="feed-panel panel section-panel mobile-active">
+          <div class="panel-head"><div><p class="eyebrow">实时快讯</p><h2>全球速探</h2><small class="panel-caption">只显示该抖音账号的最新公开作品与文字提炼</small></div><div class="panel-tools"><div class="feed-key"><span class="key-live">实时同步</span></div><label class="search-box"><span>⌕</span><input id="search" type="search" placeholder="检索作品标题或关键词" autocomplete="off" /></label></div></div>
+          <div id="live-list" class="event-list" aria-live="polite"><div class="terminal-empty"><span class="pulse"></span> 正在读取实时快讯…</div></div>
+        </section>
+
+        <aside id="ai-panel" class="ai-panel panel section-panel">
+          <div class="panel-head compact"><div><p class="eyebrow">AI 研判</p><h2>定时判断</h2><small class="panel-caption">每日 08:30 / 20:30 综合公开信息后更新</small></div><span class="ai-schedule">08:30 / 20:30</span></div>
+          <div id="ai-list" class="event-list ai-list" aria-live="polite"><div class="terminal-empty"><span class="pulse"></span> 正在读取 AI 研判…</div></div>
+          <div class="ai-watch-head"><p class="eyebrow">观察清单</p><h3>重点观察</h3></div>
+          <div class="watch-list" id="watch-list"></div>
+        </aside>
+      </section>
+
+      <section class="footnote-strip">
+        <p><span>实时来源</span> 全球速探（抖音）作品独立同步，保留发布时间与原作品链接。</p>
+        <p><span>AI 研判</span> 每日 08:30 / 20:30 综合后台公开信源后提问 AI，结果与抖音原文分栏展示。</p>
+      </section>
+    </main>
+    <script src="/app.js?v=20260811c"></script>
+  </body>
+</html>

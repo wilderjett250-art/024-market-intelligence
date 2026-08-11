@@ -1,0 +1,19 @@
+[Unit]
+Description=Market Intelligence AI Digest
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=marketintel
+Group=marketintel
+WorkingDirectory=/opt/market-intelligence/current
+Environment=DATA_DIR=/var/lib/market-intelligence
+EnvironmentFile=/etc/market-intelligence/market-intelligence-ai.env
+ExecStart=/usr/libexec/platform-python /opt/market-intelligence/current/ai_digest.py
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/market-intelligence
+StandardOutput=journal
+StandardError=journal
