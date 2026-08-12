@@ -40,7 +40,7 @@ flowchart LR
 ## 从 ZIP 开始复现 / Reproduce from ZIP
 
 1. 下载 ZIP 并解压。
-2. 复制 ...env.example 为 ...env，填写 DEEPSEEK_API_KEY 等配置。
+2. 复制 `.env.example` 为 `.env`，填写 `DEEPSEEK_API_KEY` 等配置。
 3. 执行 python app.py，默认监听 http://127.0.0.1:19083。
 4. 打开首页查看最新摘要，健康检查为 http://127.0.0.1:19083/health。
 5. 需要核验来源时执行 python verify_sources.py --data-dir .\data。
