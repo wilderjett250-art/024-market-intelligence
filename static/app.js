@@ -1,5 +1,5 @@
 (() => {
-  const state = { data: null, query: "" };
+  const state = { data: null, query: "", history: [], historyLoaded: false, selectedHistoryId: "" };
   const $ = (selector) => document.querySelector(selector);
   const escapeHtml = (value = "") => String(value)
     .replace(/&/g, "&amp;")
@@ -8,9 +8,9 @@
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
   const watch = [
-    ["影响美联储加息减息预期的消息", "近 24 小时内，影响美联储加息减息预期的消息有哪些？"],
-    ["期货与产业股票利多利空", "银、锡、碳酸锂、原油期货，以及商业航天、内存、人形机器人、核电股票"],
-    ["中东兵力、通航与美国科技股", "美军中东增减兵、中东互相打击、霍尔木兹通航量、美国科技股价格"],
+    ["影响美联储加息减息预期的消息", "近24小时内影响美联储加息减息预期的消息"],
+    ["期货与产业股票利多利空", "近24小时内银、锡、碳酸锂、原油期货，商业航天、内存、人形机器人、核电股票有哪些明显的利空利多消息"],
+    ["中东兵力、通航与美国科技股", "近24小时美军在中东的增减兵力动态，美国伊朗动态，霍尔木兹通航量变化，美国科技股价的变化"],
   ];
 
   function toDate(value) {
@@ -46,6 +46,7 @@
     return String(value || "").split(/\r?\n+/).map((line) => line.trim()).filter((line) => line && !noise.test(line) && !/^\d+$/.test(line));
   }
   function douyinSummary(record, aiSummary = "") {
+    if (record.ai_source_mode === "native_video") return { summary: record.ai_overview || "豆包已完成原生视频理解。", full: "" };
     const raw = String(record.transcript || record.excerpt || "");
     const lines = douyinLines(raw);
     const hasDigest = /章节要点/.test(raw);
@@ -64,9 +65,9 @@
       const entities = (item.entities || []).slice(0, 5).map((entity) => `<span>${escapeHtml(entity)}</span>`).join("");
       const relevance = item.market_relevance ? `<p class="news-relevance"><b>关注影响</b>${escapeHtml(item.market_relevance)}</p>` : "";
       const uncertainty = item.uncertainty ? `<p class="news-uncertainty">待核对：${escapeHtml(item.uncertainty)}</p>` : "";
-      return `<article class="douyin-news-item"><div class="news-index">${String(index + 1).padStart(2, "0")}</div><div><div class="news-meta"><span>${escapeHtml(item.category || "综合")}</span><i>转写清晰度 ${escapeHtml(item.confidence || "中")}</i></div><h4>${escapeHtml(item.headline || "新闻事件")}</h4><p class="news-summary"><b>视频提到</b>${escapeHtml(item.summary || "")}</p>${relevance}${uncertainty}${entities ? `<div class="news-entities">${entities}</div>` : ""}</div></article>`;
+      return `<article class="douyin-news-item"><div class="news-index">${String(index + 1).padStart(2, "0")}</div><div><div class="news-meta"><span>${escapeHtml(item.category || "综合")}</span><i>可信度 ${escapeHtml(item.confidence || "中")}</i></div><h4>${escapeHtml(item.headline || "新闻事件")}</h4><p class="news-summary">${escapeHtml(item.summary || "")}</p>${relevance}${uncertainty}${entities ? `<div class="news-entities">${entities}</div>` : ""}</div></article>`;
     }).join("");
-    return `<section class="douyin-ai-digest"><div class="digest-title"><div><span>新闻要点</span><strong>本期重点速览</strong></div><small>从完整视频文字稿提炼 · ${items.length} 条</small></div><p class="digest-overview">${escapeHtml(record.ai_overview || "已按独立事件完成整理。")}</p><div class="douyin-news-grid">${cards}</div></section>`;
+    return `<section class="douyin-ai-digest"><div class="digest-title"><div><span>本期速览</span><strong>${items.length} 条有效信息</strong></div><small>按视频顺序整理</small></div><p class="digest-overview">${escapeHtml(record.ai_overview || "已按独立事件完成整理。")}</p><div class="douyin-news-grid">${cards}</div></section>`;
   }
   function topicCard(topic) {
     const urls = topic.sources || [];
@@ -77,24 +78,30 @@
     }).join("");
     return `<article class="event-row ai-row"><div class="event-time"><b>AI</b><small>定时问询</small></div><div class="event-body"><div class="event-kicker"><span>多源信息综合</span><i>${escapeHtml(topic.change || "待确认")}</i><em class="status-pill">08:30 / 20:30</em></div><h3>${escapeHtml(topic.title)}</h3><p class="ai-question">${escapeHtml(topic.question || "近 24 小时有哪些明显变化？")}</p><p class="ai-conclusion">${escapeHtml(topic.summary || "本轮多源证据中暂无可核实的明确变化。")}</p>${details ? `<ul class="ai-detail-list">${details}</ul>` : ""}<div class="event-tags">${sourceLinks || '<span class="tag">公开证据不足，等待下一轮</span>'}</div></div></article>`;
   }
-  function douyinCard(record, aiSummary = "") {
+  function douyinCard(record, aiSummary = "", options = {}) {
     const url = record.url || "";
     const { summary, full } = douyinSummary(record, aiSummary);
     const refined = Array.isArray(record.ai_news_items) && record.ai_news_items.length;
     const newsDigest = douyinNewsDigest(record);
     const syncText = record.status === "error" ? `同步异常 · ${timeAgo(record.checked_at)}` : record.status === "stale" ? `最近可验证作品 · ${timeAgo(record.checked_at)}` : `最近同步 · ${timeAgo(record.checked_at)}`;
-    const modeText = refined ? `AI 新闻提炼 · ${timeAgo(record.ai_refined_at || record.checked_at)}` : aiSummary && !full ? "AI 归纳 · 基于公开信源" : syncText;
+    const nativeVideo = record.ai_source_mode === "native_video";
+    const modeText = nativeVideo ? `豆包视频提炼 · ${timeAgo(record.ai_refined_at || record.checked_at)}` : refined ? `AI 新闻提炼 · ${timeAgo(record.ai_refined_at || record.checked_at)}` : aiSummary && !full ? "AI 归纳 · 基于公开信源" : syncText;
     const rawText = String(record.transcript || record.excerpt || "");
     const publicText = String(record.public_excerpt || "");
     const polishedText = String(record.ai_full_transcript || "").trim();
-    const manuscript = polishedText || full || rawText;
+    const manuscript = nativeVideo ? "" : polishedText || full || rawText;
     const manuscriptChars = manuscript.replace(/\s/g, "").length;
-    const manuscriptLabel = polishedText ? "完整视频文字稿" : record.transcript_type === "local_vosk_asr" ? "机器听写全文" : "公开视频文字";
-    const manuscriptNote = polishedText ? "AI 校订自完整语音转写，按原视频顺序整理" : "按已采集到的公开内容完整展示";
-    const manuscriptPanel = manuscript ? `<section class="full-manuscript"><div class="manuscript-head"><div><span>${escapeHtml(manuscriptLabel)}</span><strong>${escapeHtml(manuscriptNote)}</strong></div><small>${manuscriptChars} 字</small></div><div class="manuscript-text">${escapeHtml(manuscript)}</div></section>` : "";
+    const asrConfidence = Number(record.transcript_confidence);
+    const lowConfidence = record.transcript_type === "local_vosk_asr" && Number.isFinite(asrConfidence) && asrConfidence < 0.78;
+    const publicChapterMode = record.ai_source_mode === "public_chapters";
+    const manuscriptLabel = lowConfidence ? "语音转写核查稿" : polishedText ? "完整视频文字稿" : record.transcript_type === "local_vosk_asr" ? "机器听写全文" : "公开视频文字";
+    const manuscriptNote = lowConfidence ? `机器识别清晰度 ${Math.round(asrConfidence * 100)}%，新闻摘要仅采用公开视频章节` : polishedText ? "AI 校订自完整语音转写，按原视频顺序整理" : "按已采集到的公开内容完整展示";
+    const manuscriptPanel = manuscript ? `<details class="full-manuscript"><summary><div><span>${escapeHtml(manuscriptLabel)}</span><strong>${escapeHtml(manuscriptNote)}</strong></div><small>${manuscriptChars} 字<i>展开查看</i></small></summary><div class="manuscript-text">${escapeHtml(manuscript)}</div></details>` : "";
     const publicPanel = publicText && publicText !== rawText ? `<section><b>公开视频章节文字</b><p>${escapeHtml(publicText)}</p></section>` : "";
-    const auditPanel = polishedText && rawText ? `<details class="excerpt-details"><summary>查看校订前原始听写</summary>${publicPanel}<section><b>本地语音识别原文</b><p>${escapeHtml(rawText)}</p></section></details>` : "";
-    return `<article class="event-row excerpt-row"><div class="event-time"><b>实时</b><small>抖音同步</small></div><div class="event-body"><div class="event-kicker"><span>全球速探（抖音）</span><i>${escapeHtml(modeText)}</i></div><h3>${escapeHtml(record.title || "本期作品概览")}</h3>${refined ? newsDigest : `<p class="excerpt-summary">${escapeHtml(summary)}</p>`}${manuscriptPanel}${auditPanel}<div class="event-tags"><span class="tag">发布 ${escapeHtml(record.published_at ? toDate(record.published_at) : "公开作品")}</span>${refined ? '<span class="tag ai-summary-tag">AI 校订全文</span>' : aiSummary && !full ? '<span class="tag ai-summary-tag">AI 归纳</span>' : ""}${url ? `<a class="tag geo" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开原作品 ↗</a>` : ""}</div></div></article>`;
+    const auditPanel = !nativeVideo && polishedText && rawText ? `<details class="excerpt-details"><summary>查看校订前原始听写</summary>${publicPanel}<section><b>本地语音识别原文</b><p>${escapeHtml(rawText)}</p></section></details>` : "";
+    const channelLabel = options.history ? "回放" : "实时";
+    const channelNote = options.history ? "历史记录" : "抖音同步";
+    return `<article class="event-row excerpt-row${options.history ? " history-replay" : ""}"><div class="event-time"><b>${channelLabel}</b><small>${channelNote}</small></div><div class="event-body"><div class="event-kicker"><span>全球速探（抖音）</span><i>${escapeHtml(modeText)}</i></div><h3>${escapeHtml(record.title || "本期作品概览")}</h3>${refined ? newsDigest : `<p class="excerpt-summary">${escapeHtml(summary)}</p>`}${manuscriptPanel}${auditPanel}<div class="event-tags"><span class="tag">发布 ${escapeHtml(record.published_at ? toDate(record.published_at) : "公开作品")}</span>${refined ? `<span class="tag ai-summary-tag">${nativeVideo ? "豆包原生视频理解" : publicChapterMode ? "章节文字提炼" : "AI 新闻提炼"}</span>` : aiSummary && !full ? '<span class="tag ai-summary-tag">AI 归纳</span>' : ""}${url ? `<a class="tag geo" href="${escapeHtml(url)}" target="_blank" rel="noreferrer">打开原作品 ↗</a>` : ""}</div></div></article>`;
   }
   function eventCard(event) {
     const tags = [...(event.commodities || []), ...(event.factors || [])].slice(0, 5).map((tag) => `<span class="tag">${escapeHtml(tag)}</span>`).join("");
@@ -133,6 +140,58 @@
       return `<div><span class="watch-rule" aria-hidden="true"></span><p><b>${escapeHtml(title)}</b><small>${escapeHtml(detail)}</small></p><em class="watch-state">${escapeHtml(topic?.change || "等待整理")}</em></div>`;
     }).join("");
   }
+  function historySeries(title = "") {
+    const match = String(title).match(/第\s*(\d+)\s*集/);
+    return match ? `第 ${match[1]} 集` : "历史作品";
+  }
+  function historyDate(value) {
+    if (!value) return "时间待核对";
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return new Intl.DateTimeFormat("zh-CN", {
+      year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit",
+      hour12: false, timeZone: "Asia/Taipei",
+    }).format(date).replace(/\//g, "-");
+  }
+  function renderHistoryList() {
+    const list = state.history;
+    $("#history-count").textContent = `${list.length} 条记录`;
+    $("#history-list").innerHTML = list.map((record) => {
+      const active = record.video_id === state.selectedHistoryId;
+      const stateText = record.news_count ? `${record.news_count} 条要点` : record.has_transcript ? "保留文字资料" : "仅保留索引";
+      return `<button class="history-entry${active ? " active" : ""}" type="button" data-video-id="${escapeHtml(record.video_id)}"><time>${escapeHtml(historyDate(record.published_at))}</time><strong>${escapeHtml(historySeries(record.title))}</strong><span>${escapeHtml(record.title)}</span><small>${escapeHtml(stateText)}<i>查看回放 →</i></small></button>`;
+    }).join("") || '<div class="terminal-empty small">当前还没有可回放的历史记录；下一条新作品同步后会自动归档。</div>';
+  }
+  async function openHistory(videoId) {
+    if (!videoId) return;
+    state.selectedHistoryId = videoId;
+    renderHistoryList();
+    $("#history-detail").innerHTML = '<div class="terminal-empty"><span class="pulse"></span> 正在读取回放…</div>';
+    try {
+      const response = await fetch(`/api/history/${encodeURIComponent(videoId)}`, { cache: "no-store" });
+      if (!response.ok) throw new Error(response.status);
+      const record = await response.json();
+      $("#history-detail").innerHTML = douyinCard(record, "", { history: true });
+    } catch (_) {
+      $("#history-detail").innerHTML = '<div class="terminal-empty error">这条历史记录暂时无法读取，请稍后重试。</div>';
+    }
+  }
+  async function loadHistory(force = false) {
+    if (state.historyLoaded && !force) return;
+    try {
+      const response = await fetch("/api/history", { cache: "no-store" });
+      if (!response.ok) throw new Error(response.status);
+      const payload = await response.json();
+      state.history = Array.isArray(payload.records) ? payload.records : [];
+      state.historyLoaded = true;
+      if (state.selectedHistoryId && !state.history.some((record) => record.video_id === state.selectedHistoryId)) state.selectedHistoryId = "";
+      renderHistoryList();
+      if (state.history.length && !state.selectedHistoryId) openHistory(state.history[0].video_id);
+    } catch (_) {
+      $("#history-list").innerHTML = '<div class="terminal-empty small error">无法读取历史记录，请稍后重试。</div>';
+      $("#history-count").textContent = "读取失败";
+    }
+  }
   function renderSignals() {
     const data = state.data;
     const digest = data.ai_digest;
@@ -155,6 +214,7 @@
       if (!response.ok) throw new Error(response.status);
       state.data = await response.json();
       render();
+      if (state.historyLoaded) loadHistory(true);
     } catch (_) {
       if (!state.data) $("#live-list").innerHTML = '<div class="terminal-empty error">无法读取信息服务，请稍后刷新。</div>';
     } finally {
@@ -174,7 +234,14 @@
   document.querySelectorAll(".section-tab").forEach((tab) => tab.addEventListener("click", () => {
     document.querySelectorAll(".section-tab").forEach((item) => item.classList.toggle("active", item === tab));
     document.querySelectorAll(".section-panel").forEach((panel) => panel.classList.toggle("mobile-active", panel.id === tab.dataset.section));
+    const historyMode = tab.dataset.section === "history-panel";
+    document.body.classList.toggle("history-mode", historyMode);
+    if (historyMode) loadHistory();
   }));
+  $("#history-list").addEventListener("click", (event) => {
+    const entry = event.target.closest("[data-video-id]");
+    if (entry) openHistory(entry.dataset.videoId);
+  });
   $("#reload").addEventListener("click", () => loadDashboard());
   clock();
   setInterval(clock, 1000);

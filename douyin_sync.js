@@ -14,27 +14,33 @@ const PROFILE_URL = process.env.DOUYIN_PROFILE_URL || "https://www.douyin.com/us
 const SEED_VIDEO_URL = process.env.DOUYIN_SEED_VIDEO_URL || "https://www.douyin.com/video/7666492917388791081";
 const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(__dirname, "data"));
 const OUTPUT_PATH = path.resolve(process.env.DOUYIN_LIVE_PATH || path.join(DATA_DIR, "douyin_live.json"));
+const HISTORY_DIR = path.resolve(process.env.DOUYIN_HISTORY_DIR || path.join(DATA_DIR, "douyin_history"));
 const BROWSER_PATH = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || undefined;
 const USER_AGENT = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36";
-const ASR_ENABLED = process.env.DOUYIN_ASR_ENABLED === "1";
-const ASR_SCRIPT = process.env.DOUYIN_ASR_SCRIPT || path.join(__dirname, "douyin_asr.py");
-const ASR_MODEL = process.env.DOUYIN_ASR_MODEL || "/opt/market-intelligence/tools/vosk-model-small-cn-0.22";
-const ASR_PYTHON = process.env.DOUYIN_ASR_PYTHON || "/usr/libexec/platform-python";
-const ASR_FFMPEG = process.env.DOUYIN_ASR_FFMPEG || "/opt/market-intelligence/tools/ffmpeg";
-const ASR_MEDIA_DIR = path.resolve(process.env.DOUYIN_ASR_MEDIA_DIR || path.join(DATA_DIR, "douyin_media"));
+const AI_PYTHON = process.env.DOUYIN_AI_PYTHON || "/usr/libexec/platform-python";
+const VIDEO_FFMPEG = process.env.DOUYIN_VIDEO_FFMPEG || "/opt/market-intelligence/tools/ffmpeg";
+const VIDEO_MEDIA_DIR = path.resolve(process.env.DOUYIN_VIDEO_MEDIA_DIR || process.env.DOUYIN_ASR_MEDIA_DIR || path.join(DATA_DIR, "douyin_media"));
 const AI_REFINE_ENABLED = process.env.DOUYIN_AI_REFINE_ENABLED === "1";
 const AI_REFINE_SCRIPT = process.env.DOUYIN_AI_REFINE_SCRIPT || path.join(__dirname, "douyin_refine.py");
-const AI_REFINER_VERSION = process.env.DOUYIN_AI_REFINER_VERSION || "douyin-news-v2";
+const AI_REFINER_VERSION = process.env.DOUYIN_AI_REFINER_VERSION || "douyin-native-video-v1";
 
 function nowIso() { return new Date().toISOString(); }
 function readExisting() {
   try { return JSON.parse(fs.readFileSync(OUTPUT_PATH, "utf8")); } catch (_) { return {}; }
 }
-function writeJson(value) {
-  fs.mkdirSync(path.dirname(OUTPUT_PATH), { recursive: true });
-  const tempPath = `${OUTPUT_PATH}.tmp-${process.pid}`;
+function writeJsonAt(outputPath, value) {
+  fs.mkdirSync(path.dirname(outputPath), { recursive: true });
+  const tempPath = `${outputPath}.tmp-${process.pid}`;
   fs.writeFileSync(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  fs.renameSync(tempPath, OUTPUT_PATH);
+  fs.renameSync(tempPath, outputPath);
+}
+function writeJson(value) {
+  writeJsonAt(OUTPUT_PATH, value);
+}
+function archiveRecord(record) {
+  const videoId = String(record && record.video_id || "");
+  if (!/^\d+$/.test(videoId) || !record.title || !record.url) return;
+  writeJsonAt(path.join(HISTORY_DIR, `${videoId}.json`), { ...record, archived_at: nowIso() });
 }
 function cleanText(value) {
   return String(value || "").replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\n{3,}/g, "\n\n").trim();
@@ -69,15 +75,17 @@ function publishedFromBody(body) {
 }
 function excerptFromBody(body, title) {
   const start = body.indexOf("章节要点");
-  if (start < 0) return cleanText(body.slice(0, 1200));
+  // The full page body also contains navigation, comments and recommendations.
+  // Without the video's chapter panel, publishing it as a transcript creates
+  // a convincing-looking wall of unrelated interface text.
+  if (start < 0) return "";
   const endMarkers = ["发布时间：", title].filter(Boolean).map((marker) => body.indexOf(marker, start + 4)).filter((index) => index > start);
   const end = endMarkers.length ? Math.min(...endMarkers) : Math.min(body.length, start + 9000);
   // Keep the complete public chapter panel.  The previous 9,000-character
   // cap could silently turn a long work into a partial transcript.
   return cleanText(body.slice(start, end)).slice(0, 30000);
 }
-async function downloadVideoToTemp(video, videoId, mediaSource) {
-  const source = mediaSource || await video.locator("video").evaluate((node) => node.currentSrc || node.src || "");
+async function downloadMedia(source, outputPath) {
   if (!source || source.startsWith("blob:")) throw new Error("视频原始媒体地址未出现在公开网络响应中");
   const response = await fetch(source, {
     headers: {
@@ -90,51 +98,54 @@ async function downloadVideoToTemp(video, videoId, mediaSource) {
   if (!response.ok) throw new Error(`媒体请求失败：${response.status}`);
   const bytes = Buffer.from(await response.arrayBuffer());
   if (bytes.length < 100000) throw new Error(`媒体响应过小：${bytes.length} bytes`);
-  fs.mkdirSync(ASR_MEDIA_DIR, { recursive: true });
-  const temp = path.join(ASR_MEDIA_DIR, `${videoId || "latest"}.mp4.tmp`);
-  const final = path.join(ASR_MEDIA_DIR, `${videoId || "latest"}.mp4`);
-  fs.writeFileSync(temp, bytes);
-  fs.renameSync(temp, final);
-  return final;
+  fs.writeFileSync(outputPath, bytes);
+  return bytes.length;
 }
-function runLocalAsr(videoPath) {
-  const wavPath = `${videoPath}.wav`;
+async function prepareVideoForAi(video, videoId, videoSource, audioSource) {
+  const fallback = await video.locator("video").evaluate((node) => node.currentSrc || node.src || "");
+  const visualSource = videoSource || fallback;
+  fs.mkdirSync(VIDEO_MEDIA_DIR, { recursive: true });
+  const base = path.join(VIDEO_MEDIA_DIR, `${videoId || "latest"}`);
+  const visualPath = `${base}.video.mp4`;
+  const audioPath = `${base}.audio.m4a`;
+  const finalPath = `${base}.mp4`;
+  try { fs.unlinkSync(finalPath); } catch (_) {}
   try {
-    const convert = spawnSync(ASR_FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", "-i", videoPath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath], {
-      encoding: "utf8", timeout: 150000, maxBuffer: 1024 * 1024,
-    });
-    if (convert.error || convert.status !== 0) throw new Error(`音频转换失败：${String(convert.stderr || convert.error || "unknown").slice(0, 180)}`);
-    const result = spawnSync(ASR_PYTHON, [ASR_SCRIPT, "--audio", wavPath, "--model", ASR_MODEL], {
-      encoding: "utf8", timeout: 150000, maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, PYTHONPATH: process.env.PYTHONPATH || "/opt/market-intelligence/tools/vosk-python" },
-    });
-    if (result.error || result.status !== 0) throw new Error(`本地语音识别失败：${String(result.stderr || result.error || "unknown").slice(0, 180)}`);
-    const line = String(result.stdout || "").trim().split(/\r?\n/).pop();
-    const parsed = JSON.parse(line || "{}");
-    if (parsed.status !== "ok" || !parsed.text) throw new Error("本地语音识别没有返回文字");
-    return parsed;
+    await downloadMedia(visualSource, visualPath);
+    if (audioSource && audioSource !== visualSource) {
+      await downloadMedia(audioSource, audioPath);
+      const mux = spawnSync(VIDEO_FFMPEG, ["-hide_banner", "-loglevel", "error", "-y", "-i", visualPath, "-i", audioPath, "-map", "0:v:0", "-map", "1:a:0", "-c", "copy", "-shortest", finalPath], {
+        encoding: "utf8", timeout: 120000, maxBuffer: 1024 * 1024,
+      });
+      if (mux.error || mux.status !== 0) throw new Error(`音画合并失败：${String(mux.stderr || mux.error || "unknown").slice(0, 180)}`);
+    } else {
+      fs.renameSync(visualPath, finalPath);
+    }
+    return finalPath;
+  } catch (error) {
+    try { fs.unlinkSync(finalPath); } catch (_) {}
+    throw error;
   } finally {
-    try { fs.unlinkSync(wavPath); } catch (_) {}
-    try { fs.unlinkSync(videoPath); } catch (_) {}
+    try { fs.unlinkSync(visualPath); } catch (_) {}
+    try { fs.unlinkSync(audioPath); } catch (_) {}
   }
 }
-function runAiRefiner(record) {
-  const result = spawnSync(ASR_PYTHON, [AI_REFINE_SCRIPT], {
+function runAiRefiner(record, videoPath) {
+  const result = spawnSync(AI_PYTHON, [AI_REFINE_SCRIPT], {
     input: JSON.stringify({
       video_id: record.video_id,
       title: record.title,
       published_at: record.published_at,
-      transcript_type: record.transcript_type,
-      transcript: record.transcript,
       public_excerpt: record.public_excerpt,
+      video_path: videoPath,
     }),
-    encoding: "utf8", timeout: 90000, maxBuffer: 4 * 1024 * 1024,
+    encoding: "utf8", timeout: 240000, maxBuffer: 4 * 1024 * 1024,
     env: process.env,
   });
   if (result.error || result.status !== 0) throw new Error(`AI 新闻提炼失败：${String(result.stderr || result.error || "unknown").slice(0, 300)}`);
   const line = String(result.stdout || "").trim().split(/\r?\n/).pop();
   const parsed = JSON.parse(line || "{}");
-  if (parsed.status !== "ok" || !parsed.ai_full_transcript || !Array.isArray(parsed.ai_news_items) || !parsed.ai_news_items.length) throw new Error("AI 没有返回完整文字稿和有效新闻条目");
+  if (parsed.status !== "ok" || parsed.ai_source_mode !== "native_video" || !Array.isArray(parsed.ai_news_items) || !parsed.ai_news_items.length) throw new Error("AI 没有返回有效的视频新闻条目");
   return parsed;
 }
 function copyFields(target, source, fields) {
@@ -189,7 +200,7 @@ async function sync() {
     let audioSource = "";
     video.on("response", (response) => {
       const contentType = String(response.headers()["content-type"] || "");
-      if (!/^video\//.test(contentType)) return;
+      if (!/^(video|audio)\//.test(contentType)) return;
       if (/media-audio/.test(response.url())) audioSource = response.url();
       else if (/media-video/.test(response.url())) mediaSource = response.url();
     });
@@ -208,8 +219,8 @@ async function sync() {
       video_id: ((latest.href.match(/\/video\/(\d+)/) || [])[1] || ""),
       title,
       excerpt,
-      transcript: excerpt,
-      transcript_type: "douyin_public_chapters",
+      transcript: "",
+      transcript_type: "native_video_analysis",
       published_at: publishedAt,
       checked_at: checkedAt,
       synced_at: checkedAt,
@@ -218,48 +229,35 @@ async function sync() {
     };
     const targetTitle = /^第\s*\d+\s*集.*全球局势速看/.test(record.title || "");
     const unavailable = /视频不存在|作品不存在|页面不存在|视频数据加载中/.test(body);
-    if (!record.video_id || !targetTitle || unavailable || !record.excerpt || !/发布时间：|第\s*\d+\s*集/.test(body)) throw new Error("作品页面未返回可验证的全球速探作品正文");
+    if (!record.video_id || !targetTitle || unavailable || !/发布时间：|第\s*\d+\s*集/.test(body)) throw new Error("作品页面未返回可验证的全球速探作品信息");
     const existing = readExisting();
     const sameVideo = existing.video_id === record.video_id;
     record.public_excerpt = excerpt;
-    if (sameVideo && existing.transcript_type === "local_vosk_asr" && existing.transcript) {
-      copyFields(record, existing, ["transcript", "transcript_type", "transcript_words", "transcript_model", "transcript_sample_rate"]);
-    } else if (ASR_ENABLED) {
-      try {
-        const mediaPath = await downloadVideoToTemp(video, record.video_id, audioSource || mediaSource);
-        const asr = runLocalAsr(mediaPath);
-        record.transcript = asr.text;
-        record.transcript_type = "local_vosk_asr";
-        record.transcript_words = asr.words || [];
-        record.transcript_model = asr.model || path.basename(ASR_MODEL);
-        record.transcript_sample_rate = asr.sample_rate || 16000;
-      } catch (asrError) {
-        record.transcript = excerpt;
-        record.transcript_type = "douyin_public_chapters";
-        record.transcript_error = String(asrError && asrError.message || asrError).slice(0, 300);
-      }
-    } else {
-      record.transcript = excerpt;
-      record.transcript_type = "douyin_public_chapters";
-    }
-    record.excerpt = record.transcript || excerpt;
     const reusableRefinement = sameVideo
       && existing.ai_refiner_version === AI_REFINER_VERSION
-      && existing.ai_full_transcript
+      && existing.ai_source_mode === "native_video"
       && Array.isArray(existing.ai_news_items)
       && existing.ai_news_items.length;
     if (reusableRefinement) {
-      copyFields(record, existing, ["ai_refiner_version", "ai_refiner_model", "ai_refined_at", "ai_overview", "ai_news_items", "ai_full_transcript", "ai_usage"]);
-    } else if (AI_REFINE_ENABLED && record.transcript) {
+      copyFields(record, existing, ["ai_refiner_version", "ai_source_mode", "ai_refiner_model", "ai_refined_at", "ai_overview", "ai_news_items", "ai_full_transcript", "ai_video_bytes", "ai_usage"]);
+    } else if (AI_REFINE_ENABLED) {
+      let mediaPath = "";
       try {
-        Object.assign(record, runAiRefiner(record));
+        mediaPath = await prepareVideoForAi(video, record.video_id, mediaSource, audioSource);
+        Object.assign(record, runAiRefiner(record, mediaPath));
       } catch (refineError) {
         if (sameVideo && Array.isArray(existing.ai_news_items) && existing.ai_news_items.length) {
-          copyFields(record, existing, ["ai_refiner_version", "ai_refiner_model", "ai_refined_at", "ai_overview", "ai_news_items", "ai_full_transcript", "ai_usage"]);
+          copyFields(record, existing, ["ai_refiner_version", "ai_source_mode", "ai_refiner_model", "ai_refined_at", "ai_overview", "ai_news_items", "ai_full_transcript", "ai_video_bytes", "ai_usage"]);
         }
         record.ai_refine_error = String(refineError && refineError.message || refineError).slice(0, 500);
+      } finally {
+        try { if (mediaPath) fs.unlinkSync(mediaPath); } catch (_) {}
       }
     }
+    // Preserve both sides of a rollover: the last verified work and the new
+    // work. Repeated polls update one file per video instead of duplicating it.
+    archiveRecord(existing);
+    archiveRecord(record);
     writeJson(record);
     console.log(JSON.stringify({ status: record.status, video_id: record.video_id, title: record.title, published_at: record.published_at, checked_at: record.checked_at }));
   } finally {

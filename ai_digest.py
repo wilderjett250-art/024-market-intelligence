@@ -17,9 +17,9 @@ ROOT = Path(__file__).resolve().parent
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(ROOT / "data"))).resolve()
 OUTPUT_PATH = DATA_DIR / "ai_digest.json"
 CACHE_PATH = DATA_DIR / "cache.json"
-API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
-MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+API_KEY = os.environ.get("ARK_API_KEY", "").strip() or os.environ.get("DEEPSEEK_API_KEY", "").strip()
+API_URL = os.environ.get("ARK_CHAT_API_URL", "").strip() or os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
+MODEL = os.environ.get("ARK_TEXT_MODEL", "").strip() or os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
 DOUYIN_PROFILE_URL = os.environ.get("DOUYIN_PROFILE_URL", "").strip()
 DOUYIN_EXCERPT_PATH = os.environ.get("DOUYIN_EXCERPT_PATH", "").strip()
 DOUYIN_LIVE_PATH = DATA_DIR / "douyin_live.json"
@@ -30,12 +30,12 @@ USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrom
 TOPIC_SPECS = [
     {
         "title": "影响美联储加息减息预期的消息",
-        "question": "近24小时内，影响美联储加息减息预期的消息有哪些？",
+        "question": "近24小时内影响美联储加息减息预期的消息",
         "details": ["通胀与经济数据", "就业与增长数据", "美联储官员表态", "市场利率预期"],
     },
     {
         "title": "期货与产业股票利多利空",
-        "question": "近24小时内，银、锡、碳酸锂、原油期货，以及商业航天、内存、人形机器人、核电股票，有哪些明显的利多、利空消息？",
+        "question": "近24小时内银、锡、碳酸锂、原油期货，商业航天、内存、人形机器人、核电股票有哪些明显的利空利多消息",
         "details": [
             "白银期货", "锡期货", "碳酸锂期货", "原油期货",
             "商业航天股票", "内存股票", "人形机器人股票", "核电股票",
@@ -43,8 +43,8 @@ TOPIC_SPECS = [
     },
     {
         "title": "中东兵力、通航与美国科技股",
-        "question": "近24小时内，美军在中东的增减兵力、中东互相打击、霍尔木兹通航量、美国科技股价格分别有哪些明显变化？",
-        "details": ["美军中东兵力", "中东互相打击", "霍尔木兹通航量", "美国科技股价格"],
+        "question": "近24小时美军在中东的增减兵力动态，美国伊朗动态，霍尔木兹通航量变化，美国科技股价的变化",
+        "details": ["美军中东兵力", "美国伊朗动态", "霍尔木兹通航量", "美国科技股价格"],
     },
 ]
 TOPICS = [item["title"] for item in TOPIC_SPECS]
@@ -498,7 +498,7 @@ def default_topics(source_url=""):
 
 def call_ai(context, douyin_record=None):
     if not API_KEY:
-        raise RuntimeError("DEEPSEEK_API_KEY is not configured")
+        raise RuntimeError("AI API key is not configured")
     topic_specs = json.dumps(TOPIC_SPECS, ensure_ascii=False)
     # The scheduled questions are all explicitly scoped to 24 hours.  Exclude
     # the broader relevance archive from the AI payload so older headlines
@@ -529,18 +529,20 @@ def call_ai(context, douyin_record=None):
     }
     prompt = (
         "You are a Chinese market and geopolitical intelligence editor. "
-        "Use only the supplied multi-source public evidence. Do not add outside news, prices, inventories, common knowledge, or guesses. "
-        "If sources conflict, preserve uncertainty and never present one source claim as verified fact. "
+        "Use all relevant supplied public evidence, including official statements, mainstream media, regional or industry outlets, social-media reports, and unverified reports. "
+        "Do not discard a relevant report only because its source is not authoritative. Do not add outside news, prices, inventories, common knowledge, or guesses. "
+        "If a report is a rumor, a single-source claim, or not independently confirmed, include it when relevant but clearly prefix its summary with [未证实]. "
+        "If sources conflict, preserve the disagreement and never present one source claim as verified fact. "
         "Answer the three scheduled questions for the latest 24 hours in concise Chinese. "
         "The change field must be one of: " + json.dumps(CHANGE_VALUES, ensure_ascii=False) + ". "
         "Return JSON only with exactly three topic objects in this order: " + topic_specs + ". "
         "For all three topics, use only recent_events, targeted_events, and market_snapshots. Ignore evidence older than 24 hours even when it appears elsewhere in the input. "
         "Topic 1 covers news that can change Federal Reserve rate-hike or rate-cut expectations: inflation data, employment and growth data, Federal Reserve officials' guidance, Treasury yields, and market-implied rate expectations. Do not require a formal Federal Reserve rate decision. "
         "Topic 2 covers silver, tin, lithium carbonate and crude-oil futures, plus commercial space, memory, humanoid-robot and nuclear-power stocks. "
-        "Topic 3 covers US troop increases or withdrawals in the Middle East, mutual strikes in the Middle East, changes in Strait of Hormuz traffic, and US technology-stock price changes. "
+        "Topic 3 covers US troop increases or withdrawals in the Middle East, developments between the United States and Iran, changes in Strait of Hormuz traffic, and US technology-stock price changes. "
         "Each topic must contain title, summary, change, sources, and details. Summary is an overall conclusion of at most 140 Chinese characters. "
         "Details must contain every label listed in that topic's details field, exactly once and in the supplied order; no label may be omitted. "
-        "Each detail contains label, summary, change, and sources. If a label has no clear evidence, still return it with change 未提及, sources [], and summary 近24小时内未找到可核实的明确变化。 "
+        "Each detail contains label, summary, change, and sources. Do not suppress relevant unverified reports; label them [未证实] and cite their supplied URLs. If a label has no relevant report at all, still return it with change 未提及, sources [], and summary 近24小时内未找到相关公开消息。 "
         "A market snapshot may prove a price rise or fall, but it does not by itself prove the cause or a bullish/bearish news event. "
         "Every factual summary or detail must cite only URLs that occur in the supplied evidence. Do not invent or generalize a source URL. "
         "If there is no clear evidence for an entire topic, set topic change to 待确认 and sources to [], but still return every required detail row. "

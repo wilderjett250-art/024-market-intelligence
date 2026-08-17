@@ -1,10 +1,10 @@
 [Unit]
-Description=Synchronize the public Douyin account every ten minutes
+Description=Synchronize the public Douyin account every two minutes
 
 [Timer]
-OnCalendar=*-*-* *:00/10:00
+OnCalendar=*-*-* *:00/2:00
 Persistent=true
-AccuracySec=30s
+AccuracySec=15s
 Unit=market-intelligence-douyin.service
 
 [Install]

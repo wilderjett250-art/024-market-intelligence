@@ -24,13 +24,14 @@ from urllib.request import Request, urlopen
 from xml.etree import ElementTree as ET
 
 
-APP_VERSION = "0.1.0"
+APP_VERSION = "0.2.0"
 ROOT = Path(__file__).resolve().parent
 STATIC_DIR = ROOT / "static"
 DATA_DIR = Path(os.environ.get("DATA_DIR", str(ROOT / "data"))).resolve()
 CACHE_PATH = DATA_DIR / "cache.json"
 AI_DIGEST_PATH = DATA_DIR / "ai_digest.json"
 DOUYIN_LIVE_PATH = DATA_DIR / "douyin_live.json"
+DOUYIN_HISTORY_DIR = DATA_DIR / "douyin_history"
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "19083"))
 REFRESH_SECONDS = int(os.environ.get("REFRESH_SECONDS", "60"))
@@ -619,6 +620,98 @@ def dashboard_payload():
     return snapshot
 
 
+def read_json_file(path, fallback=None):
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return fallback
+
+
+def history_record_id(record):
+    video_id = str((record or {}).get("video_id", "")).strip()
+    if video_id.isdigit():
+        return video_id
+    match = re.search(r"/video/(\d+)", str((record or {}).get("url", "")))
+    return match.group(1) if match else ""
+
+
+def archive_history_record(record, overwrite=False):
+    video_id = history_record_id(record)
+    if not video_id or not isinstance(record, dict) or not record.get("title"):
+        return False
+    DOUYIN_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    target = DOUYIN_HISTORY_DIR / (video_id + ".json")
+    if target.exists() and not overwrite:
+        return False
+    archived = dict(record)
+    archived["video_id"] = video_id
+    archived.setdefault("source", "全球速探（抖音）")
+    archived.setdefault("archived_at", utc_now())
+    temporary = target.with_suffix(".json.tmp")
+    temporary.write_text(json.dumps(archived, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(str(temporary), str(target))
+    return True
+
+
+def seed_douyin_history():
+    """Recover only records already stored by this application."""
+    current = read_json_file(DOUYIN_LIVE_PATH, {})
+    archive_history_record(current)
+    digest = read_json_file(AI_DIGEST_PATH, {})
+    if not isinstance(digest, dict) or not digest.get("source_title"):
+        return
+    source_record = {
+        "source": "全球速探（抖音）",
+        "url": digest.get("source_url", ""),
+        "title": digest.get("source_title", ""),
+        "excerpt": digest.get("source_excerpt", ""),
+        "transcript": digest.get("source_excerpt", ""),
+        "transcript_type": "historical_excerpt",
+        "ai_overview": digest.get("source_overview", ""),
+        "ai_news_items": digest.get("source_news_items", []),
+        "ai_full_transcript": digest.get("source_full_transcript", ""),
+        "published_at": digest.get("source_published_at", ""),
+        "checked_at": digest.get("evidence_updated_at") or digest.get("updated_at", ""),
+        "archive_origin": "saved_ai_digest",
+        "quality_ok": True,
+    }
+    archive_history_record(source_record)
+
+
+def history_index_payload():
+    records = []
+    if DOUYIN_HISTORY_DIR.exists():
+        for path in DOUYIN_HISTORY_DIR.glob("*.json"):
+            record = read_json_file(path, {})
+            video_id = history_record_id(record)
+            if not video_id or not record.get("title"):
+                continue
+            items = record.get("ai_news_items") if isinstance(record.get("ai_news_items"), list) else []
+            records.append({
+                "video_id": video_id,
+                "title": record.get("title", ""),
+                "url": record.get("url", ""),
+                "published_at": record.get("published_at", ""),
+                "checked_at": record.get("checked_at", ""),
+                "archived_at": record.get("archived_at", ""),
+                "overview": record.get("ai_overview", ""),
+                "news_count": len(items),
+                "has_transcript": bool(record.get("ai_full_transcript") or record.get("transcript") or record.get("excerpt")),
+                "source_mode": record.get("ai_source_mode") or record.get("transcript_type", ""),
+            })
+    records.sort(key=lambda item: (item.get("published_at", ""), item.get("checked_at", ""), item.get("video_id", "")), reverse=True)
+    return {"count": len(records), "records": records, "server_time": utc_now()}
+
+
+def history_detail_payload(video_id):
+    if not re.match(r"^\d+$", video_id or ""):
+        return None
+    record = read_json_file(DOUYIN_HISTORY_DIR / (video_id + ".json"), None)
+    if not isinstance(record, dict) or history_record_id(record) != video_id:
+        return None
+    return record
+
+
 class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
     allow_reuse_address = True
@@ -690,11 +783,23 @@ class AppHandler(BaseHTTPRequestHandler):
         if path == "/api/dashboard":
             self.send_json(dashboard_payload())
             return
+        if path == "/api/history":
+            self.send_json(history_index_payload())
+            return
+        history_match = re.match(r"^/api/history/(\d+)$", path)
+        if history_match:
+            record = history_detail_payload(history_match.group(1))
+            self.send_json(record if record is not None else {"error": "history record not found"}, 200 if record is not None else 404)
+            return
+        if path.startswith("/api/history/"):
+            self.send_json({"error": "history record not found"}, 404)
+            return
         self.serve_file(path)
 
 
 def main():
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+    seed_douyin_history()
     worker = threading.Thread(target=refresh_loop, name="collector", daemon=True)
     worker.start()
     server = ThreadingHTTPServer((HOST, PORT), AppHandler)

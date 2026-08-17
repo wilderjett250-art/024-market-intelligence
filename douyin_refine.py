@@ -1,14 +1,14 @@
-"""Turn one noisy Douyin speech transcript into a complete readable manuscript.
+"""Analyze one Douyin video with Volcengine Ark native video understanding.
 
-The refiner also extracts a compact news brief, but the complete manuscript is
-the primary artifact.  It is intentionally source-bound: it may repair obvious
-ASR wording, but it must not add facts that are absent from the transcript or
-public chapter text.  The caller caches the result per video and version.
+The model receives the MP4 directly and returns only structured news items.
+No speech transcript or full manuscript is generated or persisted.
 """
 from __future__ import print_function
 
+import base64
 import html
 import json
+import mimetypes
 import os
 import re
 import sys
@@ -18,11 +18,12 @@ from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
 
-API_KEY = os.environ.get("DEEPSEEK_API_KEY", "").strip()
-API_URL = os.environ.get("DEEPSEEK_API_URL", "https://api.deepseek.com/chat/completions")
-MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
-REFINER_VERSION = os.environ.get("DOUYIN_AI_REFINER_VERSION", "douyin-news-v2")
-USER_AGENT = "MarketIntelligenceDouyinRefiner/1.0"
+API_KEY = os.environ.get("ARK_API_KEY", "").strip()
+API_URL = os.environ.get("ARK_RESPONSES_API_URL", "https://ark.cn-beijing.volces.com/api/v3/responses").strip()
+MODEL = os.environ.get("ARK_VIDEO_MODEL", "doubao-seed-2-0-lite-260428").strip()
+REFINER_VERSION = os.environ.get("DOUYIN_AI_REFINER_VERSION", "douyin-native-video-v1")
+MAX_VIDEO_BYTES = int(os.environ.get("DOUYIN_AI_MAX_VIDEO_BYTES", str(45 * 1024 * 1024)))
+USER_AGENT = "MarketIntelligenceDouyinVideoAnalyzer/2.0"
 CONFIDENCE_VALUES = {"高", "中", "低"}
 
 
@@ -41,119 +42,123 @@ def clean_text(value, limit=0):
     return value[:limit] if limit else value
 
 
-def clean_manuscript(value):
-    """Keep paragraph breaks while removing unsafe markup and empty spacing."""
-    if value is None:
-        return ""
-    if not isinstance(value, str):
-        value = str(value)
-    value = html.unescape(value)
-    value = re.sub(r"<[^>]+>", " ", value)
-    value = value.replace("\r\n", "\n").replace("\r", "\n")
-    paragraphs = []
-    for block in re.split(r"\n\s*\n|(?<=[。！？])\s*\n", value):
-        block = re.sub(r"[ \t]+", " ", block).strip()
-        if block:
-            paragraphs.append(block)
-    return "\n\n".join(paragraphs)
-
-
 def extract_json(content):
     content = (content or "").strip()
     if content.startswith("```"):
         content = re.sub(r"^```(?:json)?\s*|\s*```$", "", content, flags=re.I | re.S).strip()
     if not content:
         raise ValueError("AI returned empty content")
-    return json.loads(content)
+    try:
+        return json.loads(content)
+    except ValueError:
+        start = content.find("{")
+        end = content.rfind("}")
+        if start >= 0 and end > start:
+            return json.loads(content[start:end + 1])
+        raise
 
 
-def normalize_result(result, source_transcript):
+def response_text(data):
+    direct = data.get("output_text")
+    if isinstance(direct, str) and direct.strip():
+        return direct
+    chunks = []
+    for item in data.get("output", []) if isinstance(data.get("output"), list) else []:
+        if not isinstance(item, dict):
+            continue
+        for content in item.get("content", []) if isinstance(item.get("content"), list) else []:
+            if not isinstance(content, dict):
+                continue
+            text = content.get("text") or content.get("output_text")
+            if isinstance(text, str) and text.strip():
+                chunks.append(text)
+    return "\n".join(chunks)
+
+
+def normalize_result(result):
     raw_items = result.get("news_items") or result.get("items") or result.get("events") or []
     if not isinstance(raw_items, list):
         raw_items = []
     items = []
-    for raw in raw_items[:12]:
+    for raw in raw_items[:16]:
         if not isinstance(raw, dict):
             continue
-        headline = clean_text(raw.get("headline") or raw.get("title"), 60)
-        summary = clean_text(raw.get("summary") or raw.get("fact"), 240)
+        headline = clean_text(raw.get("headline") or raw.get("title"), 72)
+        summary = clean_text(raw.get("summary") or raw.get("fact"), 320)
         if not headline or len(summary) < 12:
             continue
         confidence = clean_text(raw.get("confidence"), 4)
         if confidence not in CONFIDENCE_VALUES:
             confidence = "中"
         entities = raw.get("entities") if isinstance(raw.get("entities"), list) else []
-        entities = [clean_text(item, 30) for item in entities if clean_text(item, 30)][:6]
+        entities = [clean_text(item, 30) for item in entities if clean_text(item, 30)][:8]
         items.append({
             "headline": headline,
             "summary": summary,
             "category": clean_text(raw.get("category"), 16) or "综合",
             "entities": entities,
-            "market_relevance": clean_text(raw.get("market_relevance"), 160),
+            "market_relevance": clean_text(raw.get("market_relevance"), 180),
             "confidence": confidence,
-            "uncertainty": clean_text(raw.get("uncertainty"), 120),
+            "uncertainty": clean_text(raw.get("uncertainty"), 160),
         })
     if not items:
         raise ValueError("AI returned no usable news items")
-    overview = clean_text(result.get("overview"), 280)
+    overview = clean_text(result.get("overview"), 320)
     if not overview:
-        overview = "本期视频共提炼出 %d 条可读新闻事件。" % len(items)
-    manuscript = clean_manuscript(
-        result.get("full_transcript")
-        or result.get("complete_transcript")
-        or result.get("manuscript")
-    )
-    source_chars = len(re.sub(r"\s+", "", source_transcript or ""))
-    manuscript_chars = len(re.sub(r"\s+", "", manuscript))
-    minimum_chars = max(160, int(source_chars * 0.5))
-    if manuscript_chars < minimum_chars:
-        raise ValueError(
-            "full_transcript is incomplete: %d chars, expected at least %d"
-            % (manuscript_chars, minimum_chars)
-        )
-    return overview, items, manuscript
+        overview = "本期视频共提炼出 %d 条有效新闻信息。" % len(items)
+    return overview, items
 
 
-def call_deepseek(source):
+def video_data_url(video_path):
+    if not video_path or not os.path.isfile(video_path):
+        raise ValueError("video_path is missing")
+    size = os.path.getsize(video_path)
+    if size < 100000:
+        raise ValueError("video file is too small")
+    if size > MAX_VIDEO_BYTES:
+        raise ValueError("video exceeds configured upload limit: %d bytes" % size)
+    mime_type = mimetypes.guess_type(video_path)[0] or "video/mp4"
+    with open(video_path, "rb") as handle:
+        encoded = base64.b64encode(handle.read()).decode("ascii")
+    return "data:%s;base64,%s" % (mime_type, encoded), size
+
+
+def call_ark(source):
     if not API_KEY:
-        raise RuntimeError("DEEPSEEK_API_KEY is not configured")
-    transcript = clean_text(source.get("transcript"), 50000)
-    public_excerpt = clean_text(source.get("public_excerpt"), 12000)
-    if len(transcript) < 40 and len(public_excerpt) < 40:
-        raise ValueError("source transcript is too short")
-    evidence = {
+        raise RuntimeError("ARK_API_KEY is not configured")
+    media_url, video_bytes = video_data_url(source.get("video_path"))
+    context = {
         "video_title": clean_text(source.get("title"), 300),
         "published_at": clean_text(source.get("published_at"), 50),
-        "transcript_type": clean_text(source.get("transcript_type"), 40),
-        "public_chapter_text": public_excerpt,
-        "speech_to_text": transcript,
+        "public_chapter_text": clean_text(source.get("public_excerpt"), 12000),
     }
     prompt = (
-        "你是严谨的中文新闻文字编辑。任务有两个同等重要的输出：第一，按原视频顺序整理完整文字稿；第二，提炼新闻要点。"
-        "只能使用下方提供的视频标题、公开章节文字和语音转写，不得补充外部知识，不得把推测写成事实。"
-        "公开章节文字优先用于校正实体名称；只有上下文高度明确时才修复同音错字。"
-        "full_transcript 必须是完整稿，不是摘要：保留原视频从开头到结尾出现的全部实质信息、先后顺序、日期、数字、主体、动作、因果、条件、限制与风险提示。"
-        "可删除纯口头禅、明显重复和无意义转场，可补标点并分段，但不得删掉某一条新闻、不得合并掉细节、不得改写成短摘要。"
-        "听不清且无法从公开章节文字校正的局部写成[听写不清]，不要猜词，也不要因为听不清就删掉整句。每个独立新闻事件单独成段。"
-        "news_items 按独立事件拆分为 1 至 12 条，只做便于浏览的提炼，不替代 full_transcript。"
-        "专名、数字、地点无法确定时在 uncertainty 中说明，不要猜测。"
-        "每条 summary 必须回答已知范围内的谁、做了什么、在哪里或针对什么；market_relevance 只写与能源、航运、地缘或市场的直接关系，"
-        "没有明确关系时返回空字符串。confidence 只能是高、中、低。禁止提供交易建议。"
-        "返回 JSON 对象，结构严格为："
-        '{"full_transcript":"按原视频顺序整理的完整中文文字稿，使用空行分段","overview":"本期核心概览","news_items":[{"headline":"中文标题","summary":"有效事实摘要",'
+        "你是中文新闻编辑，请直接理解所附视频的画面、声音、字幕和时间顺序，将视频中的有效新闻整理为结构化 JSON。"
+        "不要生成逐字稿、全文转写或视频介绍；不要把抖音页面按钮、评论、推荐列表、账号统计、广告和栏目标签当作新闻。"
+        "新闻按视频出现顺序拆分为 1 至 16 条，每个独立事件一条；不得因为篇幅而漏掉后半段。"
+        "每条 summary 在视频可确认范围内交代谁、做了什么、地点或对象、时间与关键数字。"
+        "只能根据视频本身和随附的公开章节文字判断，不使用外部知识补全。专名、数字、地点、时间、主体或因果不清楚时，"
+        "应省略不确定表述或写入 uncertainty，不能猜测。market_relevance 只写对能源、航运、地缘或市场的直接影响，"
+        "没有直接关系时返回空字符串。confidence 只能是高、中、低。禁止提供交易建议。"
+        "严格只返回一个 JSON 对象，结构为："
+        '{"overview":"本期核心概览","news_items":[{"headline":"中文新闻标题","summary":"有效事实摘要",'
         '"category":"军事/外交/航运/能源/市场/科技/综合","entities":["实体"],'
         '"market_relevance":"直接影响或空字符串","confidence":"高/中/低","uncertainty":"不确定点或空字符串"}]}。\n\n'
-        "输入证据：\n" + json.dumps(evidence, ensure_ascii=False)
+        "作品辅助信息：" + json.dumps(context, ensure_ascii=False)
     )
     last_error = None
-    max_completion_tokens = min(8000, max(3200, int(len(transcript) * 1.8)))
     for attempt in range(2):
         payload = json.dumps({
             "model": MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0,
-            "max_tokens": max_completion_tokens,
-            "response_format": {"type": "json_object"},
+            "input": [{
+                "role": "user",
+                "content": [
+                    {"type": "input_video", "video_url": media_url},
+                    {"type": "input_text", "text": prompt},
+                ],
+            }],
+            "thinking": {"type": "disabled"},
+            "max_output_tokens": 6000,
         }).encode("utf-8")
         request = Request(API_URL, data=payload, headers={
             "Authorization": "Bearer " + API_KEY,
@@ -161,48 +166,46 @@ def call_deepseek(source):
             "User-Agent": USER_AGENT,
         })
         try:
-            with urlopen(request, timeout=60) as response:
+            with urlopen(request, timeout=210) as response:
                 data = json.loads(response.read().decode("utf-8"))
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
-            result = extract_json(content)
-            overview, items, manuscript = normalize_result(result, transcript)
+            result = extract_json(response_text(data))
+            overview, items = normalize_result(result)
             usage = data.get("usage") if isinstance(data.get("usage"), dict) else {}
             return {
                 "status": "ok",
                 "ai_refiner_version": REFINER_VERSION,
+                "ai_source_mode": "native_video",
                 "ai_refiner_model": MODEL,
                 "ai_refined_at": utc_now(),
                 "ai_overview": overview,
                 "ai_news_items": items,
-                "ai_full_transcript": manuscript,
+                "ai_full_transcript": "",
+                "ai_video_bytes": video_bytes,
                 "ai_usage": {
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
+                    "input_tokens": usage.get("input_tokens", usage.get("prompt_tokens", 0)),
+                    "output_tokens": usage.get("output_tokens", usage.get("completion_tokens", 0)),
                     "total_tokens": usage.get("total_tokens", 0),
                 },
             }
         except HTTPError as exc:
-            last_error = exc
-            if attempt == 0 and exc.code in {429, 500, 502, 503, 504}:
+            body = exc.read().decode("utf-8", "replace")[:500]
+            last_error = RuntimeError("Ark HTTP %d: %s" % (exc.code, clean_text(body, 420)))
+            if attempt == 0 and exc.code in {408, 409, 429, 500, 502, 503, 504}:
                 time.sleep(2)
                 continue
-            raise
+            raise last_error
         except (ValueError, KeyError, TypeError) as exc:
             last_error = exc
             if attempt == 0:
-                prompt += (
-                    "\n\n上一次响应未通过校验：%s。请只返回完整、有效的 JSON 对象；"
-                    "尤其不能把 full_transcript 写成摘要，必须覆盖从开头到结尾的全部实质内容。"
-                    % clean_text(str(exc), 180)
-                )
+                prompt += "\n\n上一次响应未通过校验：%s。请补全遗漏事件，并且只返回有效 JSON。" % clean_text(str(exc), 180)
                 continue
             raise
-    raise RuntimeError(str(last_error or "AI refinement failed"))
+    raise RuntimeError(str(last_error or "Ark video analysis failed"))
 
 
 def main():
     source = json.load(sys.stdin)
-    result = call_deepseek(source)
+    result = call_ark(source)
     print(json.dumps(result, ensure_ascii=False))
 
 

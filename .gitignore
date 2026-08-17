@@ -3,6 +3,8 @@ __pycache__/
 data/cache.json
 data/*.tmp
 data/smoke/
+data/verification/
+data/douyin_history/
 output/
 .playwright-cli/
 .env
