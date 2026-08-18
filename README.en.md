@@ -25,11 +25,13 @@ The page refreshes every 15 seconds while the server polls public videos every t
 - **24-hour evidence window:** Fixed questions cover rate expectations, futures and sector stocks, and Middle East/technology-stock changes.
 - **Native video understanding:** Doubao-Seed-2.0-lite performs audio-visual understanding and produces structured news points without treating page chrome or comments as transcripts.
 - **Historical video archive:** Current and processed videos are stored by video ID for list and detail replay.
+- **Dual-model failover:** Scheduled analysis uses DeepSeek first and automatically switches to the Doubao Responses API when quota, authentication, endpoint, or JSON output errors occur.
+- **Evidence coverage labels:** RSS items, market snapshots, and video evidence are indexed by topic; every conclusion keeps its source URL and evidence-strength label.
 - **Sources and uncertainty:** Claims remain tied to supplied URLs; single-source or unconfirmed reports are marked `[未证实]`.
 
 ## Tech
 
-`Python · HTML/CSS/JavaScript · Node.js · RSS · DeepSeek-compatible API · Volcengine Ark Responses API · FFmpeg · systemd`
+`Python · HTML/CSS/JavaScript · Node.js · RSS · DeepSeek API · Volcengine Ark Responses API · FFmpeg · systemd`
 
 ## Reproduce from source
 
@@ -40,6 +42,12 @@ The page refreshes every 15 seconds while the server polls public videos every t
 
 ```powershell
 python app.py
+```
+
+Run the focused tests for DeepSeek primary routing, Doubao failover, and Responses API JSON parsing:
+
+```powershell
+python -m unittest discover -s tests -v
 ```
 
 **Expected result:** The local dashboard loads, the health endpoint responds, and configured public-source summaries appear without exposing credentials.

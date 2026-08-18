@@ -34,12 +34,16 @@ flowchart LR
   **English:** Native audio-visual understanding with Doubao-Seed-2.0-lite produces structured news points without treating page chrome or comments as transcripts.
 - **历史视频归档**：当前摘要和已处理视频按视频 ID 保存，支持列表与详情回看。
   **English:** Current and processed videos are archived by video ID for list and detail replay.
+- **双模型故障转移**：定时研判优先使用 DeepSeek；遇到余额、限额、鉴权、接口或 JSON 输出异常时，自动切换豆包 Responses API，保留本轮研判结果。
+  **English:** Scheduled analysis uses DeepSeek first and automatically fails over to the Doubao Responses API when quota, authentication, endpoint, or JSON output errors occur.
+- **证据覆盖标注**：公开 RSS、行情快照和视频资料按主题建立证据目录；每条结论保留原文 URL，并标注多方来源、单源线索或暂无来源。
+  **English:** RSS items, market snapshots, and video evidence are indexed by topic; every conclusion keeps its source URL and evidence-strength label.
 - **来源与不确定性**：每个结论绑定输入 URL；单一来源或未经独立确认的报道标记为 `[未证实]`。
   **English:** Claims remain tied to supplied URLs, while single-source or unconfirmed reports are marked `[未证实]`.
 
 ## 技术名词 / Tech
 
-`Python · HTML/CSS/JavaScript · Node.js · RSS · DeepSeek-compatible API · Volcengine Ark Responses API · FFmpeg · systemd`
+`Python · HTML/CSS/JavaScript · Node.js · RSS · DeepSeek API · Volcengine Ark Responses API · FFmpeg · systemd`
 
 ## 从源码开始复现 / Reproduce from source
 
@@ -50,6 +54,12 @@ flowchart LR
 
 ```powershell
 python app.py
+```
+
+运行定向测试，确认 DeepSeek 主模型、豆包回退和 Responses API JSON 解析：
+
+```powershell
+python -m unittest discover -s tests -v
 ```
 
 **Expected result:** The local dashboard loads, the health endpoint responds, and configured public-source summaries appear without exposing credentials.
